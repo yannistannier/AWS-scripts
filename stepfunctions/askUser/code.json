@@ -1,0 +1,37 @@
+{
+  "Comment": "Processing Creating Question",
+  "StartAt": "getUserEs",
+  "States": {
+    "getUserEs": {
+      "Type": "Task",
+      "Resource": "${getUserElasticsearch}",
+      "Next": "Parallel"
+    },
+    "Parallel": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "addAskEs",
+          "States": {
+            "addAskEs": {
+              "Type": "Task",
+               "Resource": "${askEs}",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "notification",
+          "States": {
+            "notification": {
+              "Type": "Task",
+              "Resource": "${askNotification}",
+              "End": true
+            }
+          }
+        }
+      ],
+      "End": true
+    }
+  }
+}

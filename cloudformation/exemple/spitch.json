@@ -1,0 +1,326 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : " Cloudformation Stack dev Sans base de donnee",
+  "Mappings": {
+    "ElasticSearchDomain" : {
+        "Domaine" : {
+          "name" : "******"
+        }
+    },
+    "Database":{
+        "RDS" : {
+          "database" : "***",
+          "password" : "*****",
+          "port" : "***",
+          "host" : "****",
+          "user" : "****"
+        }
+    },
+    "Rekognition":{
+          "us-east-1": { "region" : "us-east-1"},
+          "us-east-2": { "region" : "us-east-1"},
+          "us-west-1": { "region" : "us-west-2"},
+          "us-west-2": { "region" : "us-west-2"},
+          "ca-central-1": { "region" : "us-east-1"},
+          "eu-west-1": { "region" : "eu-west-1"},
+          "eu-west-2": { "region" : "eu-west-1"},
+          "eu-central-1": { "region" : "eu-west-1"}
+    }
+  },
+  "Outputs" : {
+    "AccessKey" : {
+       "Value" : { "Ref" : "johnwickAccesskey" }
+    },
+    "SecretKey" : {
+       "Value" : {
+          "Fn::GetAtt" : [ "johnwickAccesskey", "SecretAccessKey" ]
+       }
+    },
+    "BucketName": {
+        "Value": {
+            "Ref": "bucket"
+        },
+    }
+  },
+  "Resources": {
+
+    "johnwick" : {
+      "DependsOn": [
+          "bucket"
+        ],
+      "Type": "AWS::IAM::User",
+      "Properties": {
+          "Policies" : [
+            {
+               "PolicyName" : "policyBucket",
+               "PolicyDocument" : {
+                  "Version": "2012-10-17",
+                  "Statement" : [ {
+                      "Action":["s3:*"],
+                      "Effect":"Allow",
+                      "Resource": { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "bucket" } , "/*" ]]}
+                    }
+                  ] 
+                }
+            }
+          ]
+      }
+    },
+
+    "LambdaExecutionRolePolicy": {
+        "Type": "AWS::IAM::Policy",
+        "Properties": {
+            "PolicyName": "LambdaExecutionRolePolicy",
+            "Roles": [
+                {"Ref": "lambdaThumbnailRole"},
+                {"Ref": "lambdaRekognitionRole"},
+            ],
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Action": ["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
+                      "Resource": "arn:aws:logs:*:*:*"
+                    }
+                ]
+            }
+        }
+    },
+
+    "tableRekognition": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "user",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "photo",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "user",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "photo",
+            "KeyType": "RANGE"
+          }
+        ],
+        "ProvisionedThroughput": {
+          "ReadCapacityUnits": "1",
+          "WriteCapacityUnits": "1"
+        }
+      }
+    },
+
+    "johnwickAccesskey" : {
+       "Type" : "AWS::IAM::AccessKey",
+       "Properties" : {
+          "UserName" : { "Ref" : "johnwick" }
+       }
+    }, 
+
+    "bucketSettings": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy":"Delete",
+      "Properties": {
+      }
+    },
+
+    "bucket": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy":"Delete",
+      "Properties": {
+          "CorsConfiguration": {
+            "CorsRules": [
+              {
+                  "AllowedHeaders": [
+                      "*"
+                  ],
+                  "AllowedMethods": [
+                      "GET"
+                  ],
+                  "AllowedOrigins": [
+                      "*"
+                  ],
+                  "MaxAge": "3600"
+              }
+            ]
+        }
+      }
+    },
+
+    "bucketPolicy" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "Bucket" : {"Ref" : "bucket"},
+        "PolicyDocument": {
+          "Statement":[
+            {
+              "Action":["s3:GetObject"],
+              "Effect":"Allow",
+              "Principal":"*",
+              "Resource": { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "bucket" } , "/*" ]]},
+            }
+          ]
+        }
+      }
+    },
+
+    "lambdaThumbnailRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+            "AssumeRolePolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": ["sts:AssumeRole"]
+                    }
+                ]
+            }
+        }
+    },
+    "lambdaThumbnailRolePolicy": {
+        "Type": "AWS::IAM::Policy",
+        "Properties": {
+            "PolicyName": "lambdaThumbnailRolePolicy",
+            "Roles": [
+                {"Ref": "lambdaThumbnailRole"}
+            ],
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject"
+                      ],
+                      "Resource": [
+                        { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "bucket" } , "/*" ]]},
+                        { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "bucketSettings" } , "/*" ]]}
+                      ]
+                    }
+                ]
+            }
+        }
+    },
+    "lambdaThumbnail": {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+          "Handler" : "createThumbnail.handler",
+          "Code" : {
+              "S3Bucket": {"Ref": "bucketSettings"},
+              "S3Key": "lambda/createThumbnail.zip"
+          },
+          "Runtime": "python2.7",
+          "Timeout" : "250",
+          "MemorySize": "512",
+          "Role": { "Fn::GetAtt" : ["lambdaThumbnailRole", "Arn"] }
+        }
+    },
+
+
+    "lambdaRekognitionRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+            "AssumeRolePolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": ["sts:AssumeRole"]
+                    }
+                ]
+            }
+        }
+    },
+    "lambdaRekognitionRolePolicy":{
+        "Type": "AWS::IAM::Policy",
+          "Properties": {
+              "PolicyName": "lambdaRekognitionRolePolicy",
+              "Roles": [
+                  {"Ref": "lambdaRekognitionRole"}
+              ],
+              "PolicyDocument": {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                      {
+                        "Effect": "Allow",
+                        "Action": [
+                            "rekognition:DetectFaces",
+                            "rekognition:DetectLabels",
+                            "rekognition:DetectModerationLabels"
+                        ],
+                        "Resource": "*"
+                      },
+                      {
+                          "Effect": "Allow",
+                          "Action": [
+                              "dynamodb:PutItem",
+                              "dynamodb:Query"
+                          ],
+                          "Resource": [
+                              {"Fn::Join": ["/",[{"Fn::Join": [":",["arn:aws:dynamodb",{"Ref": "AWS::Region"},{"Ref": "AWS::AccountId"}, "table"]]},{"Ref": "tableRekognition"}]]}
+                          ]
+                      }
+                  ]
+              }
+        }
+    },
+    "lambdaRekognition":{
+        "Type":"AWS::Lambda::Function",
+        "Properties" : {
+            "Handler": "lambda_function.lambda_handler",
+          "Code":{
+              "S3Bucket": { "Ref": "bucketSettings"},
+              "S3Key": "lambda/rekognition.zip"
+          },
+          "Environment" : {
+            "Variables" : {
+              "REGION_REKOGNITION": { "Fn::FindInMap" : [ "Rekognition", { "Ref" : "AWS::Region" }, "region" ]}
+            }
+          },
+          "Runtime": "python2.7",
+          "Timeout" : "250",
+          "MemorySize":"512",
+          "Role": { "Fn::GetAtt" : ["lambdaRekognitionRole", "Arn"] }
+        }
+    },
+    "lambdaSaveRekognition":{
+        "Type":"AWS::Lambda::Function",
+        "Properties" : {
+            "Handler": "lambda_function.lambda_handler",
+          "Code":{
+              "S3Bucket": { "Ref": "bucketSettings"},
+              "S3Key": "lambda/saveRekognition.zip"
+          },
+          "Environment" : {
+            "Variables" : {
+              "NAME_DYNAMODB_TABLE": {"Ref": "tableRekognition"}
+            }
+          },
+          "Runtime": "python2.7",
+          "Timeout" : "250",
+          "MemorySize":"512",
+          "Role": { "Fn::GetAtt" : ["lambdaRekognitionRole", "Arn"] }
+        }
+    }
+
+
+
+  }
+}
+

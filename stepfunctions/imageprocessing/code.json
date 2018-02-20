@@ -1,0 +1,63 @@
+{
+  "Comment": "Image Processing workflow",
+  "StartAt": "CheckSize",
+  "States": {
+    "CheckSize": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.size",
+          "NumericGreaterThan": 5200000,
+          "Next": "Thumbnail-Large"
+        }
+      ],
+      "Default": "ParallelProcessing"
+    },
+    "Thumbnail-Large": {
+      "Type": "Task",
+      "Resource": "${lambdaThumbnail}",
+      "Next": "Rekognition-Large"
+    },
+    "Rekognition-Large": {
+      "Type": "Task",
+      "Resource": "${lambdaThumbnail}",
+      "Next": "saveRekognition-Large"
+    },
+    "saveRekognition-Large": {
+      "Type": "Task",
+      "Resource": "${lambdaSaveRekognition}",
+      "End": true
+    },
+    "ParallelProcessing": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Rekognition",
+          "States": {
+            "Rekognition": {
+              "Type": "Task",
+              "Resource": "${lambdaRekognition}",
+              "Next": "saveRekognition"
+            },
+            "saveRekognition": {
+              "Type": "Task",
+              "Resource": "${lambdaSaveRekognition}",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Thumbnail",
+          "States": {
+            "Thumbnail": {
+              "Type": "Task",
+              "Resource": "${lambdaThumbnail}",
+              "End": true
+            }
+          }
+        }
+      ],
+      "End": true
+    }
+  }
+}

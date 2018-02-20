@@ -1,0 +1,861 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Cloudformation Stack dev Sans base de donnee"
+Mappings:
+  ElasticSearchDomain:
+    Domaine:
+      name: "http://xxxxx:9200"
+  FCM:
+    Key:
+      name: "xxxxxx"
+  Neo4j:
+    Domaine:
+      name: "xxxxx"
+    Login:
+      user: "neo4j"
+      password: "xxxxxx"
+  Database:
+    RDS:
+      database: "*****"
+      password: "*****"
+      port: "****"
+      host: "****"
+      user: "****"
+  Rekognition:
+    us-east-1:
+      region: "us-east-1"
+    us-east-2:
+      region: "us-east-1"
+    us-west-1:
+      region: "us-west-2"
+    us-west-2:
+      region: "us-west-2"
+    ca-central-1:
+      region: "us-east-1"
+    eu-west-1: 
+      region : "eu-west-1"
+    eu-west-2:
+      region: "eu-west-1"
+    eu-central-1:
+      region: "eu-west-1"
+Outputs:
+  AccessKey:
+    Value: !Ref johnwickAccesskey
+  SecretKey:
+    Value: !GetAtt johnwickAccesskey.SecretAccessKey
+  BucketName:
+    Value: !Ref bucket
+  SqsWorker:
+    Value: !Ref sqsWorker
+Resources:
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step 0 : create basic element (depend on nothing)
+# ---------------------------------------------------------------------------------------------------------------------
+  tableRekognition:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      AttributeDefinitions:
+        -
+          AttributeName: "user"
+          AttributeType: "S"
+        -
+          AttributeName: "photo"
+          AttributeType: "S"
+      KeySchema:
+        -
+          AttributeName: "user"
+          KeyType: "HASH"
+        -
+          AttributeName: "photo"
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  tableNotification:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      StreamSpecification:
+        StreamViewType: "NEW_AND_OLD_IMAGES"
+      AttributeDefinitions:
+        -
+          AttributeName: "id"
+          AttributeType: "S"
+        -
+          AttributeName: "uid"
+          AttributeType: "S"
+        -
+          AttributeName: "timestamp"
+          AttributeType: "N"
+      KeySchema:
+        -
+          AttributeName: "id"
+          KeyType: "HASH"
+        -
+          AttributeName: "uid"
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      GlobalSecondaryIndexes:
+        -
+          IndexName: "id-timestamp-index"
+          KeySchema:
+            -
+              AttributeName: "id"
+              KeyType: "HASH"
+            -
+              AttributeName: "timestamp"
+              KeyType: "RANGE"
+          Projection:
+            ProjectionType: "ALL"
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+
+  stepFunctionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service: !Sub states.${AWS::Region}.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdaThumbnailRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource: "*"
+    
+  sqsNotificationDeadqueue:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      DelaySeconds: 0
+      MaximumMessageSize: 262144
+      MessageRetentionPeriod: 864000
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 30
+
+  sqsNotification:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      DelaySeconds: 0
+      MaximumMessageSize: 262144
+      MessageRetentionPeriod: 864000
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        maxReceiveCount: 3
+        deadLetterTargetArn: !GetAtt sqsNotificationDeadqueue.Arn
+
+  sqsWorkerDeadqueue:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      DelaySeconds: 0
+      MaximumMessageSize: 262144
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 30
+
+  sqsWorker:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      DelaySeconds: 0
+      MaximumMessageSize: 262144
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 43200
+      RedrivePolicy:
+        maxReceiveCount: 10
+        deadLetterTargetArn: !GetAtt sqsWorkerDeadqueue.Arn
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step 1 : create bucket-setting and duplicate from base-dev-spitchtv-settings
+# ---------------------------------------------------------------------------------------------------------------------
+
+  bucketSettings:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Delete
+
+  lambdaCopySourceRole:
+    Type: 'AWS::IAM::Role'
+    DependsOn:
+      - bucketSettings
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - 
+          PolicyName: lambdaCopySourceRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - 
+                Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource:
+                  - 'arn:aws:s3:::base-dev-spitchtv-settings'
+                  - 'arn:aws:s3:::base-dev-spitchtv-settings/*'
+              - 
+                Effect: Allow
+                Action:
+                  - '*'
+                Resource:
+                  - !Sub "arn:aws:s3:::${bucketSettings}/*"
+                  - !Sub "arn:aws:s3:::${bucketSettings}"
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "arn:aws:logs:*:*:*"
+
+
+  lambdaCopySource:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import cfnresponse
+          def handler(event, context):
+              if event['RequestType'] == 'Create' or event['RequestType'] == 'Update' :
+                  s3 = boto3.client('s3')
+                  source_client = boto3.client('s3', 'us-east-2')
+                  for obj in source_client.list_objects(Bucket='base-dev-spitchtv-settings')['Contents']:
+                      copy_source = {'Bucket': 'base-dev-spitchtv-settings','Key': obj['Key']}
+                      s3.copy(copy_source, os.environ['BUCKET'], obj['Key'], SourceClient=source_client)
+              if event['RequestType'] == 'Delete' : 
+                  s3 = boto3.client('s3')
+                  for obj in s3.list_objects(Bucket=os.environ['BUCKET'])['Contents']:
+                      s3.delete_object(Bucket=os.environ['BUCKET'], Key=obj['Key'])
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Data':{}})
+      Environment:
+        Variables:
+          BUCKET: !Ref bucketSettings
+      Handler: index.handler
+      Role: !GetAtt lambdaCopySourceRole.Arn
+      Runtime: python2.7
+      Timeout: '250'
+
+  ExecuteLambdaDuplicateSource:
+    Type: 'AWS::CloudFormation::CustomResource'
+    Properties:
+      ServiceToken: !GetAtt lambdaCopySource.Arn
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step 2 : Step function and lambdas that trigger S3 (Only lambda and sfn with hardcore bucket name)
+# ---------------------------------------------------------------------------------------------------------------------
+
+# -------------- lambda --------------
+
+  lambdaThumbnailRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdaThumbnailRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource: !Join [ "", [ "arn:aws:s3:::", !Join [ "-", [ !Ref "AWS::StackName", "bucket", !Select [ 2, !Split [ "-", !Ref bucketSettings ] ] ] ], "/*" ] ]
+
+  lambdaThumbnail:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - ExecuteLambdaDuplicateSource
+    Properties:
+      Handler: "createThumbnail.handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/createThumbnail.zip"
+      Runtime: "python2.7"
+      Timeout: "250"
+      MemorySize: "512"
+      Role: !GetAtt lambdaThumbnailRole.Arn
+
+
+  lambdaRekognitionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdaRekognitionRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "rekognition:DetectFaces"
+                  - "rekognition:DetectLabels"
+                  - "rekognition:DetectModerationLabels"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:PutItem"
+                  - "dynamodb:Query"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tableRekognition}"
+
+  lambdaRekognition:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - ExecuteLambdaDuplicateSource
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/rekognition.zip"
+      Environment:
+        Variables:
+          REGION_REKOGNITION: !FindInMap [ Rekognition, !Ref "AWS::Region", region ]
+      Runtime: "python2.7"
+      Timeout: "250"
+      MemorySize: "512"
+      Role: !GetAtt lambdaRekognitionRole.Arn
+
+
+  lambdaSaveRekognition:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - ExecuteLambdaDuplicateSource
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/saveRekognition.zip"
+      Environment:
+        Variables:
+          NAME_DYNAMODB_TABLE: !Ref tableRekognition
+      Runtime: "python2.7"
+      Timeout: "250"
+      MemorySize: "512"
+      Role: !GetAtt lambdaRekognitionRole.Arn
+
+
+# -------------- Step function  --------------
+  imageProcessing:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      RoleArn: !GetAtt stepFunctionRole.Arn
+      DefinitionString:
+        !Sub
+            - |-
+              {
+                "Comment": "Image Processing workflow",
+                "StartAt": "CheckSize",
+                "States": {
+                  "CheckSize": {
+                    "Type": "Choice",
+                    "Choices": [
+                      {
+                        "Variable": "$.size",
+                        "NumericGreaterThan": 5200000,
+                        "Next": "Thumbnail-Large"
+                      }
+                    ],
+                    "Default": "ParallelProcessing"
+                  },
+                  "Thumbnail-Large": {
+                    "Type": "Task",
+                    "Resource": "${lambdaThumbnail}",
+                    "Next": "Rekognition-Large"
+                  },
+                  "Rekognition-Large": {
+                    "Type": "Task",
+                    "Resource": "${lambdaThumbnail}",
+                    "Next": "saveRekognition-Large"
+                  },
+                  "saveRekognition-Large": {
+                    "Type": "Task",
+                    "Resource": "${lambdaSaveRekognition}",
+                    "End": true
+                  },
+                  "ParallelProcessing": {
+                    "Type": "Parallel",
+                    "Branches": [
+                      {
+                        "StartAt": "Rekognition",
+                        "States": {
+                          "Rekognition": {
+                            "Type": "Task",
+                            "Resource": "${lambdaRekognition}",
+                            "Next": "saveRekognition"
+                          },
+                          "saveRekognition": {
+                            "Type": "Task",
+                            "Resource": "${lambdaSaveRekognition}",
+                            "End": true
+                          }
+                        }
+                      },
+                      {
+                        "StartAt": "Thumbnail",
+                        "States": {
+                          "Thumbnail": {
+                            "Type": "Task",
+                            "Resource": "${lambdaThumbnail}",
+                            "End": true
+                          }
+                        }
+                      }
+                    ],
+                    "End": true
+                  }
+                }
+              }
+            - {lambdaThumbnail: !GetAtt lambdaThumbnail.Arn ,
+              lambdaRekognition: !GetAtt lambdaRekognition.Arn,
+              lambdaSaveRekognition: !GetAtt lambdaSaveRekognition.Arn}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step 3 : create trigger S3 
+# ---------------------------------------------------------------------------------------------------------------------
+
+  lambdaStartImageProcessing:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - imageProcessing
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/startImageProcessing.zip"
+      Environment:
+        Variables:
+          ARN_IMAGE_PROCESSING: !Ref imageProcessing
+      Runtime: "python2.7"
+      Timeout: "250"
+      MemorySize: "512"
+      Role: !GetAtt lambdaStartImageProcessingRole.Arn
+
+  lambdaStartImageProcessingRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdaStartImageProcessingRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "states:StartExecution"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                Resource: !Join [ "", [ "arn:aws:s3:::", !Join [ "-", [ !Ref "AWS::StackName", "bucket", !Select [ 2, !Split [ "-", !Ref bucketSettings ] ] ] ] ] ]
+
+  lambdaStartImageProcessingRolePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:invokeFunction"
+      FunctionName: !Ref lambdaStartImageProcessing
+      SourceArn: !Join [ "", [ "arn:aws:s3:::", !Join [ "-", [ !Ref "AWS::StackName", "bucket", !Select [ 2, !Split [ "-", !Ref bucketSettings ] ] ] ] ] ]
+      Principal: "s3.amazonaws.com"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step 3 bis : lambdas trigger Dynamodb Notification and send Notification from SQS
+# ---------------------------------------------------------------------------------------------------------------------
+
+  lambdaTriggerDynamoNotifRole:
+    Type: "AWS::IAM::Role"
+    DependsOn:
+      - sqsNotification
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdaTriggerDynamoNotifRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "sqs:SendMessageBatch"
+                  - "sqs:SendMessage"
+                  - "sqs:ListQueues"
+                  - "sqs:GetQueueUrl"
+                Resource: !GetAtt sqsNotification.Arn
+              -
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:DescribeStream"
+                  - "dynamodb:GetRecords"
+                  - "dynamodb:GetShardIterator"
+                  - "dynamodb:ListStreams"
+                Resource: "*"
+
+  lambdaTriggerDynamoNotif:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - ExecuteLambdaDuplicateSource
+      - sqsNotification
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/notification/triggerNotifDynamodb.zip"
+      Environment:
+        Variables:
+          URL_SQL: !Ref sqsNotification
+      Runtime: "python2.7"
+      Timeout: "300"
+      MemorySize: "512"
+      Role: !GetAtt lambdaTriggerDynamoNotifRole.Arn
+
+  eventSourceDynamoNotif:
+    Type: "AWS::Lambda::EventSourceMapping"
+    DependsOn:
+      - lambdaTriggerDynamoNotif
+      - tableNotification
+    Properties:
+      BatchSize: 100
+      Enabled: true
+      EventSourceArn: !GetAtt tableNotification.StreamArn
+      FunctionName: !GetAtt lambdaTriggerDynamoNotif.Arn
+      StartingPosition: "LATEST"
+
+  lambdaSendNotificationRole:
+    Type: "AWS::IAM::Role"
+    DependsOn:
+      - sqsNotification
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdaSendNotificationRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "sqs:ReceiveMessage"
+                  - "sqs:GetQueueUrl"
+                  - "sqs:DeleteMessage"
+                Resource: !GetAtt sqsNotification.Arn
+
+  lambdaSendNotification:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - ExecuteLambdaDuplicateSource
+      - sqsNotification
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/notification/sendNotification.zip"
+      Environment:
+        Variables:
+          SQS: !GetAtt sqsNotification.QueueName
+          FCM_KEY: !FindInMap [ FCM, Key, name ]
+      Runtime: "python2.7"
+      Timeout: "300"
+      MemorySize: "512"
+      Role: !GetAtt lambdaSendNotificationRole.Arn
+
+  lambdaCronSqsNotificationRole:
+    Type: "AWS::IAM::Role"
+    DependsOn:
+      - sqsNotification
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "lambdacronSqsNotificationRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "lambda:InvokeAsync"
+                  - "lambda:InvokeFunction"
+                Resource: !GetAtt lambdaSendNotification.Arn
+              -
+                Effect: "Allow"
+                Action:
+                  - "sqs:GetQueueAttributes"
+                Resource: !GetAtt sqsNotification.Arn
+
+  lambdaCronSqsNotification:
+    Type: "AWS::Lambda::Function"
+    DependsOn:
+      - ExecuteLambdaDuplicateSource
+      - sqsNotification
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref bucketSettings
+        S3Key: "lambda/notification/cronSqsNotification.zip"
+      Environment:
+        Variables:
+          NAME_SQS_URL: !Ref sqsNotification
+          NAME_LAMBDA_FUNCTION: !Ref lambdaSendNotification
+      Runtime: "python2.7"
+      Timeout: "300"
+      MemorySize: "128"
+      Role: !GetAtt lambdaCronSqsNotificationRole.Arn
+
+  eventSqsNotification:
+    Type: "AWS::Events::Rule"
+    DependsOn:
+      - lambdaCronSqsNotification
+    Properties:
+      ScheduleExpression: "rate(1 minute)"
+      State: "ENABLED"
+      Targets:
+        -
+          Arn: !GetAtt lambdaCronSqsNotification.Arn
+          Id: !Join [ "-", [ "TargetFunctionSqs", !Ref "AWS::StackName" ] ]
+
+  PermissionForEventCronSqs:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - eventSqsNotification
+      - lambdaCronSqsNotification
+    Properties:
+      FunctionName: !Ref lambdaCronSqsNotification
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt eventSqsNotification.Arn
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step 4 : create bucket based bucket-settings name
+# ---------------------------------------------------------------------------------------------------------------------
+
+  bucket:
+    Type: "AWS::S3::Bucket"
+    DependsOn:
+      - bucketSettings
+      - lambdaStartImageProcessing
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Join [ "-", [ !Ref "AWS::StackName", "bucket", !Select [ 2, !Split [ "-", !Ref bucketSettings ] ] ] ]
+      NotificationConfiguration:
+        LambdaConfigurations:
+          -
+            Function: !GetAtt lambdaStartImageProcessing.Arn
+            Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  -
+                    Name: "prefix"
+                    Value: "media/"
+                  -
+                    Name: "suffix"
+                    Value: "png"
+          -
+            Function: !GetAtt lambdaStartImageProcessing.Arn
+            Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  -
+                    Name: "prefix"
+                    Value: "media/"
+                  -
+                    Name: "suffix"
+                    Value: "jpg"
+      CorsConfiguration:
+        CorsRules:
+          -
+            AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - "GET"
+            AllowedOrigins:
+              - "*"
+            MaxAge: "3600"
+
+  bucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref bucket
+      PolicyDocument:
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${bucket}/*"
+            Principal: "*"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Step  : IAM and generic Role
+# ---------------------------------------------------------------------------------------------------------------------
+
+  johnwick:
+    DependsOn: "bucket"
+    Type: "AWS::IAM::User"
+    Properties:
+      Policies:
+        -
+          PolicyName: "policyBucket"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "elastictranscoder:CreateJob"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:*"
+                Resource: !Sub "arn:aws:s3:::${bucket}/*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:DescribeTable"
+                  - "dynamodb:Query"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:UpdateItem"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tableNotification}/*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "sqs:SendMessageBatch"
+                  - "sqs:SendMessage"
+                  - "sqs:ListQueues"
+                  - "sqs:GetQueueUrl"
+                Resource: !GetAtt sqsWorker.Arn
+              -
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:BatchWriteItem"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:UpdateItem"
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tableNotification}"
+
+  johnwickAccesskey:
+    Type: "AWS::IAM::AccessKey"
+    Properties:
+      UserName: !Ref johnwick
+
+
+  LambdaExecutionRolePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "LambdaExecutionRolePolicy"
+      Roles:
+        - !Ref lambdaThumbnailRole
+        - !Ref lambdaRekognitionRole
+        - !Ref stepFunctionRole
+        - !Ref lambdaStartImageProcessingRole
+        - !Ref lambdaTriggerDynamoNotifRole
+        - !Ref lambdaSendNotificationRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: "arn:aws:logs:*:*:*"
+          -
+            Effect: "Allow"
+            Action:
+              - "xray:PutTraceSegments"
+              - "xray:PutTelemetryRecords"
+            Resource: "*"
+
+
+

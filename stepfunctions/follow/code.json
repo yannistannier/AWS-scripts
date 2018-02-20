@@ -1,0 +1,37 @@
+{
+  "Comment": "Processing follow and notification",
+  "StartAt": "getUserEs",
+  "States": {
+    "getUserEs": {
+      "Type": "Task",
+      "Resource": "${getUserElasticsearch}",
+      "Next": "Parallel"
+    },
+    "Parallel": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "addLinkNeo",
+          "States": {
+            "addLinkNeo": {
+              "Type": "Task",
+            "Resource": "${followRelationship}",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "notification",
+          "States": {
+            "notification": {
+              "Type": "Task",
+              "Resource": "${followNotification}",
+              "End": true
+            }
+          }
+        }
+      ],
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "Comment": "Step function sync User : add / fcm / update / location / lang ",
+  "StartAt": "ChoiceState",
+  "States": {
+    "ChoiceState": {
+      "Type" : "Choice",
+      "Choices": [
+        {
+          "Variable": "$.type",
+          "StringEquals": "add",
+          "Next": "addUserParall"
+        },
+        {
+          "Variable": "$.type",
+          "StringEquals": "fcm",
+          "Next": "updateFcm"
+        },
+        {
+          "Variable": "$.type",
+          "StringEquals": "update",
+          "Next": "updateParallel"
+        },
+        {
+          "Variable": "$.type",
+          "StringEquals": "location",
+          "Next": "updateLocation"
+        },
+        {
+          "Variable": "$.type",
+          "StringEquals": "lang",
+          "Next": "updateLanguage"
+        }
+      ],
+      "Default": "DefaultState"
+    },
+    "DefaultState": {
+      "Type": "Fail",
+      "Cause": "No Matches!"
+    },
+    "addUserParall": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "addUserEs",
+          "States": {
+            "addUserEs": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserEsCreate-7LNXZIJCCDMY",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "parseUserNeo",
+          "States": {
+            "parseUserNeo": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserNeoCheck-2RAGWK6QZOFJ",
+              "Next": "addUserNeo"
+            },
+            "addUserNeo": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserNeoCreate-1LFOYLH3NLEMQ",
+              "End": true
+            }
+          }
+        }
+      ],
+      "End": true
+    },
+    "updateFcm":{
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserNeoUpdate-1FMV1D2FJY50Z",
+      "End": true
+    },
+    "updateParallel": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "updateUserEs",
+          "States": {
+            "updateUserEs": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserEsUpdate-VNC6QQ97ESTH",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "checkIfUpdateNeo",
+          "States": {
+            "checkIfUpdateNeo": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserNeoCheck-2RAGWK6QZOFJ",
+              "Next": "ChoiceUpdateNeo"
+            },
+            "ChoiceUpdateNeo": {
+              "Type" : "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.neo",
+                  "BooleanEquals": true,
+                  "Next": "updateNeo"
+                },
+                {
+                  "Variable": "$.neo",
+                  "BooleanEquals": false,
+                  "Next": "noUpdateNeo"
+                }
+              ]
+            },
+            "updateNeo": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserNeoUpdate-1FMV1D2FJY50Z",
+              "End": true
+            },
+            "noUpdateNeo": {
+              "Type": "Succeed"
+            }
+          }
+        }
+      ],
+      "End": true
+    },
+    "updateLocation":{
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserEsLangLocation-F6WF8KH9N4I0",
+      "End": true
+    },
+    "updateLanguage":{
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:eu-west-1:074761588836:function:spitchdev-syncUserEsLangLocation-F6WF8KH9N4I0",
+      "End": true
+    }
+  }
+}
